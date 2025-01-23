@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -13,7 +14,13 @@
 
 /*** DATA ***/
 
-struct termios orig_termios;
+struct editorConfig {
+    int screenrows;
+    int screencols;
+    struct termios orig_termios;
+};
+
+struct editorConfig E;
 
 /*** TERMINAL ***/
 
@@ -26,18 +33,17 @@ void die(const char *s) {
 }
 
 void disableRawMode() {
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios) == -1) {
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios) == -1) {
         die("tcsetattr");
     }
 }
 
 void enableRawMode() {
-    struct termios raw;
-
-    if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) {
+    if (tcgetattr(STDIN_FILENO, &E.orig_termios) == -1) {
         die("tcgetattr");
     }
-    raw = orig_termios;
+    struct termios raw = E.orig_termios;
+
     // FLIP OFF
     // ECHO - text is not displayed as it is typed
     // ICANON - process input as chars come in
@@ -75,12 +81,64 @@ char editorReadKey() {
     return c;
 }
 
+int getCursorPosition(int *rows, int *cols) {
+    if (write(STDOUT_FILENO, "\x1b[6n", 4) != 4) {
+        return -1;
+    }
+
+    printf("\r\n");
+    char c;
+    while (read(STDIN_FILENO, &c, 1) == 1) {
+        if (iscntrl(c)) {
+            printf("%d\r\n", c);
+        }
+        else {
+            printf("%d ('%c')\r\n", c, c);
+        }
+    }
+
+    editorReadKey();
+
+    return -1;
+}
+
+int getWindowSize(int *rows, int *cols) {
+    struct winsize ws;
+
+    // IOCTL is not guaranteed on all systems - provide fallback
+    if (1 || ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 1 || ws.ws_col == 0) {
+        if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) {
+            return -1;
+        }
+        else {
+            return getCursorPosition(rows, cols);
+        }
+        return -1;
+    }
+    else {
+        *cols = ws.ws_col;
+        *rows = ws.ws_row;
+        return 0;
+    }
+}
+
 /*** OUTPUT ***/
+
+void editorDrawRows() {
+    int y;
+    for (y = 0; y < E.screenrows ; y++) {
+        write(STDOUT_FILENO, "~\r\n", 3);
+    }
+}
 
 void editorRefreshScreen() {
     // \x1b[2j escape sequence to clear full screen
     write(STDOUT_FILENO, "\x1b[2J", 4);
     // [H to move cursor to top left corner
+    write(STDOUT_FILENO, "\x1b[H", 3);
+
+    // row setup
+    editorDrawRows();
     write(STDOUT_FILENO, "\x1b[H", 3);
 }
 
@@ -97,8 +155,16 @@ void editorProcessKeypress() {
 }
 
 /*** INIT ***/
+
+void initEditor() {
+    if (getWindowSize(&E.screenrows, &E.screencols) == -1) {
+        die("getWindowsSize");
+    }
+}
+
 int main() {
     enableRawMode();
+    initEditor();
 
     while (1) {
         editorRefreshScreen();
