@@ -1,35 +1,51 @@
 /*** INCLUDES ***/
 
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 
 /*** DEFINES ***/
 
 #define CRATE_VERSION "0.0.1"
-
 #define CTRL_KEY(k) ((k) & 0x1f)
+
 
 enum editorKey {
     ARROW_LEFT = 1000,
     ARROW_RIGHT,
     ARROW_UP,
     ARROW_DOWN,
+    DEL_KEY,
+    HOME_KEY,
+    END_KEY,
     PAGE_UP,
-    PAGE_DOWN
+    PAGE_DOWN,
 };
 
 /*** DATA ***/
 
+typedef struct erow {
+    int size;
+    char *chars;
+} erow;
+
 struct editorConfig {
     int cx, cy;
-    int screenrows;
-    int screencols;
+    int rowoff; // keep track of the row user is scrolled to
+    int screenrows; // rows in terminal window
+    int screencols; // columns in terminal window
+    int numrows;
+    erow *row;
     struct termios orig_termios;
 };
 
@@ -108,20 +124,46 @@ int editorReadKey() {
                 }
                 if (seq[2] == '~') {
                     switch (seq[1]) {
+                        case '1':
+                            return HOME_KEY;
+                        case '3':
+                            return DEL_KEY;
+                        case '4':
+                            return END_KEY;
                         case '5':
                             return PAGE_UP;
                         case '6':
                             return PAGE_DOWN;
+                            case '7':
+                                return HOME_KEY;
+                            case '8':
+                                return END_KEY;
                     }
                 }
             }
             else {
                 switch (seq[1]) {
-                    case 'A': return ARROW_UP;
-                    case 'B': return ARROW_DOWN;
-                    case 'C': return ARROW_RIGHT;
-                    case 'D': return ARROW_LEFT;
+                    case 'A': 
+                        return ARROW_UP;
+                    case 'B': 
+                        return ARROW_DOWN;
+                    case 'C': 
+                        return ARROW_RIGHT;
+                    case 'D': 
+                        return ARROW_LEFT;
+                    case 'H':
+                        return HOME_KEY;
+                    case 'F':
+                        return END_KEY;
                 }
+            }
+        }
+        else if (seq[0] == 'O') {
+            switch (seq[1]) {
+                case 'H':
+                    return HOME_KEY;
+                case 'F':
+                    return END_KEY;
             }
         }
 
@@ -182,6 +224,45 @@ int getWindowSize(int *rows, int *cols) {
     }
 }
 
+/*** row operations ***/
+
+void editorAppendRow(char *s, size_t len) {
+        // allocate enough room for another erow
+        E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
+
+        int at = E.numrows;
+        E.row[at].size = len;
+        E.row[at].chars = malloc(len + 1);
+        memcpy(E.row[at].chars, s, len);
+        E.row[at].chars[len] = '\0';
+        E.numrows++;
+}
+
+/*** file i/o ***/
+
+void editorOpen(char *filename) {
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        die("fopen");
+    }
+
+    char *line = NULL;
+    size_t linecap = 0;
+    ssize_t linelen;
+    while ((linelen = getline(&line, &linecap, fp)) != -1) {
+        if (linelen != -1) {
+            while (linelen > 0 && (line[linelen - 1] == '\n' ||
+                                line[linelen - 1] == '\r')) {
+                linelen--;
+            }
+            
+            editorAppendRow(line, linelen);
+        }
+    }
+    free(line);
+    fclose(fp);
+}
+
 /*** append buffer ***/
 
 struct abuf {
@@ -211,28 +292,39 @@ void abFree(struct abuf *ab) {
 void editorDrawRows(struct abuf *ab) {
     int y;
     for (y = 0; y < E.screenrows ; y++) {
-        if (y == E.screenrows / 3) {
-            char welcome[80];
-            int welcomelen = snprintf(welcome, sizeof(welcome), 
-            "Crate editor == version %s", CRATE_VERSION);
+        if (y >= E.numrows) {
+            if (E.numrows == 0 && y == E.screenrows / 3) {
+                char welcome[80];
+                int welcomelen = snprintf(welcome, sizeof(welcome), 
+                "Crate editor == version %s", CRATE_VERSION);
 
-            // ensure message does not wrap - ugly
-            if (welcomelen > E.screencols) {
-                welcomelen = E.screencols;
+                // ensure message does not wrap - ugly
+                if (welcomelen > E.screencols) {
+                    welcomelen = E.screencols;
+                }
+                int padding = (E.screencols - welcomelen) / 2;
+                if (padding) {
+                    abAppend(ab, "~", 1);
+                    padding--;
+                }
+                while (padding--) {
+                    abAppend(ab, " ", 1);
+                }
+                abAppend(ab, welcome, welcomelen);
             }
-            int padding = (E.screencols - welcomelen) / 2;
-            if (padding) {
+            else {
                 abAppend(ab, "~", 1);
-                padding--;
             }
-            while (padding--) {
-                abAppend(ab, " ", 1);
-            }
-            abAppend(ab, welcome, welcomelen);
         }
         else {
-            abAppend(ab, "~", 1);
+            int len = E.row[y].size;
+            // If length of row test will overflow, truncate
+            if (len > E.screencols) {
+                len = E.screencols;
+            }
+            abAppend(ab, E.row[y].chars, len);
         }
+
         // <esc>[K to clear right of cursor
         abAppend(ab, "\x1b[K", 3);
 
@@ -304,6 +396,13 @@ void editorProcessKeypress() {
             write(STDOUT_FILENO, "\x1b[H", 3);
             exit(0);
             break;
+
+        case HOME_KEY:
+            E.cx = 0;
+            break;
+        case END_KEY:
+            E.cx = E.screencols - 1;
+            break;
         case PAGE_UP:
         case PAGE_DOWN:
             {
@@ -319,6 +418,8 @@ void editorProcessKeypress() {
         case ARROW_LEFT:
             editorMoveCursor(c);
             break;
+        case DEL_KEY:
+            break;
     }
 }
 
@@ -327,14 +428,19 @@ void editorProcessKeypress() {
 void initEditor() {
     E.cx = 0;
     E.cy = 0;
+    E.numrows = 0;
+    E.row = NULL;
     if (getWindowSize(&E.screenrows, &E.screencols) == -1) {
         die("getWindowsSize");
     }
 }
 
-int main() {
+int main(int argc, char *argv[]) {
     enableRawMode();
     initEditor();
+    if (argc >= 2) {
+        editorOpen(argv[1]);
+    }
 
     while (1) {
         editorRefreshScreen();
