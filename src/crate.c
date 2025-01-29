@@ -55,6 +55,7 @@ struct editorConfig {
     int screencols; // columns in terminal window
     int numrows;
     erow *row; // array of erows holding file lines
+    int dirty;  // boolean = Has the file been changed without saving
     char *filename;
     char statusmsg[80];
     time_t statusmsg_time;
@@ -62,6 +63,10 @@ struct editorConfig {
 };
 
 struct editorConfig E;
+
+/*** ---------- PROTOTYPES ---------- ***/
+
+void editorSetStatusMessage(const char *fmt, ...);
 
 /*** ---------- TERMINAL ---------- ***/
 
@@ -292,6 +297,7 @@ void editorAppendRow(char *s, size_t len) {
         editorUpdateRow(&E.row[at]);
 
         E.numrows++;
+        E.dirty++;
 }
 
 void editorRowInsertChar(erow *row, int at, int c) {
@@ -303,6 +309,7 @@ void editorRowInsertChar(erow *row, int at, int c) {
     row->size++;
     row->chars[at] = c;
     editorUpdateRow(row);
+    E.dirty++;
 }
 
 /*** ---------- editor operations ---------- ***/
@@ -361,6 +368,7 @@ void editorOpen(char *filename) {
     }
     free(line);
     fclose(fp);
+    E.dirty = 0;
 }
 
 void editorSave() {
@@ -380,6 +388,8 @@ void editorSave() {
             if (write(fd, buf, len) != -1) {
                 close(fd);
                 free(buf);
+                E.dirty = 0;
+                editorSetStatusMessage("%d bytes written to disk", len);
                 return;
             }
         }
@@ -387,6 +397,7 @@ void editorSave() {
     }
 
     free(buf);
+    editorSetStatusMessage("Cannot save! I/O error: %s", strerror(errno));
 }
 
 /*** ---------- append buffer ---------- ***/
@@ -486,8 +497,9 @@ void editorDrawRows(struct abuf *ab) {
 void editorDrawStatusBar(struct abuf *ab) {
     abAppend(ab, "\x1b[7m", 4);  // invert colors
     char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines", 
-                       E.filename ? E.filename : "[No Name]", E.numrows);
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s", 
+                       E.filename ? E.filename : "[No Name]", E.numrows,
+                       E.dirty ? "(modified)" : "");
     int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.cy + 1, E.numrows);
     if (len > E.screencols) {
         len = E.screencols;
@@ -679,6 +691,7 @@ void initEditor() {
     E.coloff = 0;
     E.numrows = 0;
     E.row = NULL;
+    E.dirty = 0;
     E.filename = NULL;
     E.statusmsg[0] = '\0';
     E.statusmsg_time = 0;
