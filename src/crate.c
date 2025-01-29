@@ -21,6 +21,7 @@
 
 #define CRATE_VERSION "0.0.1"
 #define CRATE_TAB_STOP 8
+#define CRATE_QUIT_TIMES 3
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 
@@ -611,6 +612,8 @@ void editorMoveCursor(int key) {
 }
 
 void editorProcessKeypress() {
+    static int quit_times = CRATE_QUIT_TIMES;
+
     int c = editorReadKey();
 
     switch (c) {
@@ -618,6 +621,13 @@ void editorProcessKeypress() {
             break;
         
         case CTRL_KEY('q'):
+            if (E.dirty && quit_times > 0) {
+                editorSetStatusMessage("WARNING!!! File has unsaved changes. "
+                                        "Press Ctrl-Q %d more times to quit.", quit_times);
+                quit_times--;
+                return;
+            }
+
             // clear screen
             write(STDOUT_FILENO, "\x1b[2J", 4);
             // cursor to top left
@@ -679,6 +689,7 @@ void editorProcessKeypress() {
             editorInsertChar(c);
             break;
     }
+    quit_times = CRATE_QUIT_TIMES;
 }
 
 /*** ---------- INIT ---------- ***/
