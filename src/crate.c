@@ -6,6 +6,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +17,7 @@
 #include <time.h>
 #include <unistd.h>
 
-/*** DEFINES ***/
+/*** ---------- DEFINES ---------- ***/
 
 #define CRATE_VERSION "0.0.1"
 #define CRATE_TAB_STOP 8
@@ -24,6 +25,7 @@
 
 
 enum editorKey {
+    BACKSPACE = 127,
     ARROW_LEFT = 1000,
     ARROW_RIGHT,
     ARROW_UP,
@@ -35,7 +37,7 @@ enum editorKey {
     PAGE_DOWN,
 };
 
-/*** DATA ***/
+/*** ---------- DATA ---------- ***/
 
 typedef struct erow {
     int size;
@@ -61,7 +63,7 @@ struct editorConfig {
 
 struct editorConfig E;
 
-/*** TERMINAL ***/
+/*** ---------- TERMINAL ---------- ***/
 
 void die(const char *s) {
     write(STDOUT_FILENO, "\x1b[2J", 4);
@@ -234,7 +236,7 @@ int getWindowSize(int *rows, int *cols) {
     }
 }
 
-/*** row operations ***/
+/*** ---------- row operations ---------- ***/
 
 int editorRowCxToRx(erow *row, int cx) {
     int rx = 0;
@@ -292,7 +294,48 @@ void editorAppendRow(char *s, size_t len) {
         E.numrows++;
 }
 
-/*** file i/o ***/
+void editorRowInsertChar(erow *row, int at, int c) {
+    if (at < 0 || at > row->size) {
+        at = row->size;
+    }
+    row->chars = realloc(row->chars, row->size + 2);
+    memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
+    row->size++;
+    row->chars[at] = c;
+    editorUpdateRow(row);
+}
+
+/*** ---------- editor operations ---------- ***/
+
+void editorInsertChar(int c) {
+    if (E.cy == E.numrows) {
+        editorAppendRow("", 0);
+    }
+    editorRowInsertChar(&E.row[E.cy], E.cx, c);
+    E.cx++;
+}
+
+/*** ---------- file i/o ---------- ***/
+
+char *editorRowsToString(int *buflen) {
+    int totlen = 0;
+    int j;
+    for (j = 0; j < E.numrows; j++) {
+        totlen += E.row[j].size + 1;  //+1 for newlines
+    }
+    *buflen = totlen;
+
+    char* buf = malloc(totlen);
+    char *p = buf;
+    for (j = 0; j < E.numrows; j++) {
+        memcpy(p, E.row[j].chars, E.row[j].size);
+        p += E.row[j].size;
+        *p = '\n';
+        p++;
+    }
+
+    return buf;
+}
 
 void editorOpen(char *filename) {
     free(E.filename);
@@ -320,7 +363,25 @@ void editorOpen(char *filename) {
     fclose(fp);
 }
 
-/*** append buffer ***/
+void editorSave() {
+    if (E.filename == NULL) {
+        return;
+    }
+
+    int len;
+    char *buf = editorRowsToString(&len);
+
+    // O_CREAT - create new file if does not exist
+    // O_RDWR - open for reading and writing
+    // 0644 - gives standard file permissions
+    int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
+    ftruncate(fd, len);
+    write(fd, buf, len);
+    close(fd);
+    free(buf);
+}
+
+/*** ---------- append buffer ---------- ***/
 
 struct abuf {
     char *b;
@@ -344,7 +405,7 @@ void abFree(struct abuf *ab) {
     free(ab->b);
 }
 
-/*** OUTPUT ***/
+/*** ---------- OUTPUT ---------- ***/
 
 void editorScroll() {
     E.rx = 0;
@@ -486,7 +547,7 @@ void editorSetStatusMessage(const char *fmt, ...) {
     E.statusmsg_time = time(NULL);
 }
 
-/*** INPUT ***/
+/*** ---------- INPUT ---------- ***/
 
 void editorMoveCursor(int key) {
     erow *row = (E.cy > E.numrows) ? NULL : &E.row[E.cy];
@@ -533,6 +594,9 @@ void editorProcessKeypress() {
     int c = editorReadKey();
 
     switch (c) {
+        case '\r':
+            break;
+        
         case CTRL_KEY('q'):
             // clear screen
             write(STDOUT_FILENO, "\x1b[2J", 4);
@@ -541,14 +605,25 @@ void editorProcessKeypress() {
             exit(0);
             break;
 
+        case CTRL_KEY('s'):
+            editorSave();
+            break;
+
         case HOME_KEY:
             E.cx = 0;
             break;
+        
         case END_KEY:
             if (E.cy < E.numrows) {
                 E.cx = E.row[E.cy].size;
             }
             break;
+        
+        case BACKSPACE:
+        case CTRL_KEY('h'):
+        case DEL_KEY:
+            break;
+        
         case PAGE_UP:
         case PAGE_DOWN:
             {
@@ -568,18 +643,25 @@ void editorProcessKeypress() {
                 }
                 break;
             }
+        
         case ARROW_UP:
         case ARROW_DOWN:
         case ARROW_RIGHT:
         case ARROW_LEFT:
             editorMoveCursor(c);
             break;
-        case DEL_KEY:
+        
+        case CTRL_KEY('l'):  // ignore, traditionally refresh
+        case '\x1b':
+            break;
+        
+        default:
+            editorInsertChar(c);
             break;
     }
 }
 
-/*** INIT ***/
+/*** ---------- INIT ---------- ***/
 
 void initEditor() {
     E.cx = 0;
