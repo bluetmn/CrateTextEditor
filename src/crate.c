@@ -375,9 +375,17 @@ void editorSave() {
     // O_RDWR - open for reading and writing
     // 0644 - gives standard file permissions
     int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
-    ftruncate(fd, len);
-    write(fd, buf, len);
-    close(fd);
+    if (fd != -1) {
+        if (ftruncate(fd, len) != -1) {
+            if (write(fd, buf, len) != -1) {
+                close(fd);
+                free(buf);
+                return;
+            }
+        }
+        close(fd);
+    }
+
     free(buf);
 }
 
